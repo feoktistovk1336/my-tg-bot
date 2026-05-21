@@ -138,13 +138,30 @@ async def publish_post(post_id: int):
     if not post:
         return
     try:
-        photo = post.get("photo")
-        text  = post.get("text", "")
+        photos = post.get("photos", [])
+        photo  = post.get("photo")
+        text   = post.get("text", "")
 
-        if photo:
-            # Telegram ограничение: подпись макс 1024 символа
+        if len(photos) > 1:
+            # Альбом из нескольких фото
+            from aiogram.types import InputMediaPhoto
+            media = []
+            for i, ph in enumerate(photos):
+                if i == 0:
+                    # Текст только к первому фото если <= 1024 символов
+                    cap = text if len(text) <= 1024 else ""
+                    media.append(InputMediaPhoto(media=ph, caption=cap, parse_mode="HTML"))
+                else:
+                    media.append(InputMediaPhoto(media=ph))
+            msgs = await bot.send_media_group(chat_id=CHANNEL_ID, media=media)
+            # Если текст длинный — отправляем отдельно
             if len(text) > 1024:
-                msg = await bot.send_photo(chat_id=CHANNEL_ID, photo=photo, parse_mode="HTML")
+                await bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="HTML")
+            msg = msgs[0]
+        elif photo:
+            # Одно фото
+            if len(text) > 1024:
+                msg = await bot.send_photo(chat_id=CHANNEL_ID, photo=photo)
                 await bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="HTML")
             else:
                 msg = await bot.send_photo(chat_id=CHANNEL_ID, photo=photo, caption=text, parse_mode="HTML")
@@ -274,13 +291,51 @@ async def use_template(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.message(PostForm.waiting_for_image, F.photo)
 async def received_image(message: types.Message, state: FSMContext):
-    await state.update_data(photo=message.photo[-1].file_id)
+    photo_id = message.photo[-1].file_id
+    await state.update_data(photos=[photo_id], photo=photo_id)
+    await state.set_state(PostForm.waiting_for_image)
+    await message.answer(
+        "✅ Фото 1 принято!\n\n"
+        "Отправь ещё фото (до 10 штук) или нажми кнопку ниже:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="➡️ Достаточно, перейти к тексту")],
+                [KeyboardButton(text="⏩ Пропустить (без фото)")]
+            ],
+            resize_keyboard=True
+        )
+    )
+
+@dp.message(PostForm.waiting_for_image, F.photo)
+async def received_more_images(message: types.Message, state: FSMContext):
+    data   = await state.get_data()
+    photos = data.get("photos", [])
+    if len(photos) >= 10:
+        await message.answer("⚠️ Максимум 10 фото!")
+        return
+    photos.append(message.photo[-1].file_id)
+    await state.update_data(photos=photos, photo=photos[0])
+    await message.answer(
+        f"✅ Фото {len(photos)} принято!\n\n"
+        f"Всего фото: <b>{len(photos)}</b>\n\n"
+        f"Отправь ещё или нажми <b>«➡️ Достаточно»</b>",
+        parse_mode="HTML"
+    )
+
+@dp.message(PostForm.waiting_for_image, F.text == "➡️ Достаточно, перейти к тексту")
+async def photos_done(message: types.Message, state: FSMContext):
+    data   = await state.get_data()
+    photos = data.get("photos", [])
     await state.set_state(PostForm.waiting_for_text)
-    await message.answer("✅ Фото принято!\n\n" + format_guide(), parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
+    await message.answer(
+        f"✅ {len(photos)} фото сохранено!\n\n" + format_guide(),
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove()
+    )
 
 @dp.message(PostForm.waiting_for_image, F.text == "⏩ Пропустить (без фото)")
 async def skip_image(message: types.Message, state: FSMContext):
-    await state.update_data(photo=None)
+    await state.update_data(photos=[], photo=None)
     await state.set_state(PostForm.waiting_for_text)
     await message.answer(format_guide(), parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
 
@@ -324,12 +379,23 @@ async def received_datetime(message: types.Message, state: FSMContext):
 # ─── ПРЕДПРОСМОТР ────────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "preview_post", PostForm.waiting_for_confirm)
 async def preview_new_post(callback: types.CallbackQuery, state: FSMContext):
-    data  = await state.get_data()
-    photo = data.get("photo")
-    text  = data.get("text", "")
+    data   = await state.get_data()
+    photos = data.get("photos", [])
+    photo  = data.get("photo")
+    text   = data.get("text", "")
     await callback.answer()
     await callback.message.answer("👁 <b>Так будет выглядеть пост:</b>", parse_mode="HTML")
-    if photo:
+
+    if len(photos) > 1:
+        from aiogram.types import InputMediaPhoto
+        media = []
+        for i, ph in enumerate(photos):
+            cap = text if i == 0 and len(text) <= 1024 else ""
+            media.append(InputMediaPhoto(media=ph, caption=cap, parse_mode="HTML"))
+        await callback.message.answer_media_group(media=media)
+        if len(text) > 1024:
+            await callback.message.answer(text, parse_mode="HTML")
+    elif photo:
         if len(text) > 1024:
             await callback.message.answer_photo(photo=photo)
             await callback.message.answer(text, parse_mode="HTML")
