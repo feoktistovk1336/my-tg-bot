@@ -77,14 +77,17 @@ def skip_keyboard():
 
 def confirm_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👁 Предпросмотр", callback_data="preview_post")],
         [
-            InlineKeyboardButton(text="👁 Предпросмотр",   callback_data="preview_post"),
-            InlineKeyboardButton(text="✅ Подтвердить",    callback_data="confirm_post"),
+            InlineKeyboardButton(text="✍️ Текст",  callback_data="edit_draft_text"),
+            InlineKeyboardButton(text="📸 Фото",   callback_data="edit_draft_photo"),
+            InlineKeyboardButton(text="⏰ Время",  callback_data="edit_draft_time"),
         ],
         [
-            InlineKeyboardButton(text="💾 Сохранить шаблон", callback_data="save_template"),
-            InlineKeyboardButton(text="❌ Отменить",          callback_data="cancel_post"),
-        ]
+            InlineKeyboardButton(text="💾 Шаблон",      callback_data="save_template"),
+            InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_post"),
+        ],
+        [InlineKeyboardButton(text="❌ Отменить создание", callback_data="cancel_post")],
     ])
 
 def edit_field_keyboard(pid: int, is_published: bool = False):
@@ -107,6 +110,12 @@ def failed_post_keyboard(pid: int):
         [InlineKeyboardButton(text="🗑 Удалить",             callback_data=f"delete_failed_{pid}")],
     ])
 
+
+# ─── РЕДАКТИРОВАНИЕ ЧЕРНОВИКА ────────────────────────────────────────────────
+class DraftEdit(StatesGroup):
+    editing_text     = State()
+    editing_photo    = State()
+    editing_datetime = State()
 
 # ─── ФОРМАТИРОВАНИЕ ──────────────────────────────────────────────────────────
 def format_guide() -> str:
@@ -349,6 +358,104 @@ async def preview_existing(callback: types.CallbackQuery):
             await callback.message.answer_photo(photo=photo, caption=text, parse_mode="HTML")
     else:
         await callback.message.answer(text, parse_mode="HTML")
+
+
+# ─── РЕДАКТИРОВАНИЕ ЧЕРНОВИКА (до подтверждения) ─────────────────────────────
+@dp.callback_query(F.data == "edit_draft_text")
+async def edit_draft_text(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(DraftEdit.editing_text)
+    await callback.message.answer(
+        "✍️ <b>Введи новый текст поста:</b>\n\n" + format_guide(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.message(DraftEdit.editing_text, F.text)
+async def edit_draft_text_save(message: types.Message, state: FSMContext):
+    await state.update_data(text=message.text)
+    await state.set_state(PostForm.waiting_for_confirm)
+    data = await state.get_data()
+    publish_dt = datetime.fromisoformat(data["publish_at"])
+    await message.answer(
+        f"✅ Текст обновлён!\n\n📋 <b>Черновик:</b>\n"
+        f"{'📸 Фото: есть' if data.get('photo') else '📝 Без фото'}\n"
+        f"⏰ <code>{publish_dt.strftime('%d.%m.%Y в %H:%M')}</code>",
+        parse_mode="HTML",
+        reply_markup=confirm_keyboard()
+    )
+
+@dp.callback_query(F.data == "edit_draft_photo")
+async def edit_draft_photo(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(DraftEdit.editing_photo)
+    await callback.message.answer(
+        "📸 Отправь новое фото или напиши <b>«без фото»</b> чтобы убрать фото:",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.message(DraftEdit.editing_photo, F.photo)
+async def edit_draft_photo_save(message: types.Message, state: FSMContext):
+    await state.update_data(photo=message.photo[-1].file_id)
+    await state.set_state(PostForm.waiting_for_confirm)
+    data = await state.get_data()
+    publish_dt = datetime.fromisoformat(data["publish_at"])
+    await message.answer(
+        f"✅ Фото обновлено!\n\n📋 <b>Черновик:</b>\n"
+        f"📸 Фото: есть\n"
+        f"⏰ <code>{publish_dt.strftime('%d.%m.%Y в %H:%M')}</code>",
+        parse_mode="HTML",
+        reply_markup=confirm_keyboard()
+    )
+
+@dp.message(DraftEdit.editing_photo, F.text)
+async def edit_draft_photo_remove(message: types.Message, state: FSMContext):
+    if "без фото" in message.text.lower():
+        await state.update_data(photo=None)
+        await state.set_state(PostForm.waiting_for_confirm)
+        data = await state.get_data()
+        publish_dt = datetime.fromisoformat(data["publish_at"])
+        await message.answer(
+            f"✅ Фото убрано!\n\n📋 <b>Черновик:</b>\n"
+            f"📝 Без фото\n"
+            f"⏰ <code>{publish_dt.strftime('%d.%m.%Y в %H:%M')}</code>",
+            parse_mode="HTML",
+            reply_markup=confirm_keyboard()
+        )
+    else:
+        await message.answer("Отправь фото или напиши «без фото»")
+
+@dp.callback_query(F.data == "edit_draft_time")
+async def edit_draft_time(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(DraftEdit.editing_datetime)
+    tz  = pytz.timezone(TIMEZONE)
+    now = datetime.now(tz).strftime("%d.%m.%Y %H:%M")
+    await callback.message.answer(
+        f"⏰ <b>Введи новое время публикации:</b>\n\nСейчас: <code>{now}</code>\n"
+        f"Формат: <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.message(DraftEdit.editing_datetime, F.text)
+async def edit_draft_time_save(message: types.Message, state: FSMContext):
+    try:
+        tz         = pytz.timezone(TIMEZONE)
+        publish_dt = tz.localize(datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M"))
+        if publish_dt <= datetime.now(tz):
+            await message.answer("⚠️ Это время уже прошло! Введи будущее время.")
+            return
+        await state.update_data(publish_at=publish_dt.isoformat())
+        await state.set_state(PostForm.waiting_for_confirm)
+        data = await state.get_data()
+        await message.answer(
+            f"✅ Время обновлено!\n\n📋 <b>Черновик:</b>\n"
+            f"{'📸 Фото: есть' if data.get('photo') else '📝 Без фото'}\n"
+            f"⏰ <code>{publish_dt.strftime('%d.%m.%Y в %H:%M')}</code>",
+            parse_mode="HTML",
+            reply_markup=confirm_keyboard()
+        )
+    except ValueError:
+        await message.answer("❌ Неверный формат! Пример: <code>25.12.2025 18:30</code>", parse_mode="HTML")
 
 
 # ─── СОХРАНИТЬ ШАБЛОН ────────────────────────────────────────────────────────
@@ -689,10 +796,19 @@ async def cancel_post_menu(message: types.Message):
     )] for pid, p in user_posts.items()]
     await message.answer("Выбери пост для отмены:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-@dp.callback_query(F.data.startswith("delete_") and ~F.data.startswith("delete_failed_"))
+@dp.callback_query(F.data.startswith("delete_"))
 async def delete_post(callback: types.CallbackQuery):
     global stats
-    pid = int(callback.data.split("_")[1])
+    data_parts = callback.data.split("_")
+    # Защита от случайного срабатывания
+    if len(data_parts) < 2:
+        await callback.answer()
+        return
+    # Пропускаем delete_failed_ — оно обрабатывается отдельно
+    if callback.data.startswith("delete_failed_"):
+        await callback.answer()
+        return
+    pid = int(data_parts[1])
     if pid in scheduled_posts and scheduled_posts[pid]["creator_id"] == callback.from_user.id:
         try:
             scheduler.remove_job(f"post_{pid}")
