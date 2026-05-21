@@ -30,7 +30,10 @@ scheduler = AsyncIOScheduler(timezone=TIMEZONE)
 
 scheduled_posts: dict = {}
 published_posts: dict = {}
-post_counter = 0
+failed_posts: dict    = {}
+templates: dict       = {}
+post_counter          = 0
+stats                 = {"published": 0, "failed": 0, "cancelled": 0}
 
 
 # ─── СОСТОЯНИЯ ───────────────────────────────────────────────────────────────
@@ -41,10 +44,16 @@ class PostForm(StatesGroup):
     waiting_for_confirm  = State()
 
 class EditForm(StatesGroup):
-    choosing_field    = State()
-    editing_text      = State()
-    editing_image     = State()
-    editing_datetime  = State()
+    choosing_field   = State()
+    editing_text     = State()
+    editing_image    = State()
+    editing_datetime = State()
+
+class TemplateForm(StatesGroup):
+    waiting_name = State()
+
+class RepeatForm(StatesGroup):
+    waiting_datetime = State()
 
 
 # ─── КЛАВИАТУРЫ ──────────────────────────────────────────────────────────────
@@ -52,8 +61,10 @@ def main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📝 Создать пост")],
-            [KeyboardButton(text="📋 Мои посты"),     KeyboardButton(text="📰 Опубликованные")],
-            [KeyboardButton(text="✏️ Редактировать"), KeyboardButton(text="❌ Отменить пост")],
+            [KeyboardButton(text="📋 Мои посты"),      KeyboardButton(text="📰 Опубликованные")],
+            [KeyboardButton(text="⚠️ Ошибки постов"),  KeyboardButton(text="✏️ Редактировать")],
+            [KeyboardButton(text="📅 Расписание"),      KeyboardButton(text="📊 Статистика")],
+            [KeyboardButton(text="⏱ Шаблоны"),         KeyboardButton(text="❌ Отменить пост")],
         ],
         resize_keyboard=True
     )
@@ -67,51 +78,67 @@ def skip_keyboard():
 def confirm_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="👁 Предпросмотр",  callback_data="preview_post"),
-            InlineKeyboardButton(text="✅ Подтвердить",   callback_data="confirm_post"),
+            InlineKeyboardButton(text="👁 Предпросмотр",   callback_data="preview_post"),
+            InlineKeyboardButton(text="✅ Подтвердить",    callback_data="confirm_post"),
         ],
-        [InlineKeyboardButton(text="❌ Отменить создание", callback_data="cancel_post")]
+        [
+            InlineKeyboardButton(text="💾 Сохранить шаблон", callback_data="save_template"),
+            InlineKeyboardButton(text="❌ Отменить",          callback_data="cancel_post"),
+        ]
     ])
 
 def edit_field_keyboard(pid: int, is_published: bool = False):
     buttons = [
-        [InlineKeyboardButton(text="✍️ Изменить текст", callback_data=f"edit_text_{pid}")],
-        [InlineKeyboardButton(text="📸 Изменить фото",  callback_data=f"edit_photo_{pid}")],
+        [InlineKeyboardButton(text="✍️ Изменить текст",  callback_data=f"edit_text_{pid}")],
+        [InlineKeyboardButton(text="📸 Изменить фото",   callback_data=f"edit_photo_{pid}")],
     ]
     if not is_published:
-        buttons.append([InlineKeyboardButton(text="⏰ Изменить время", callback_data=f"edit_time_{pid}")])
-    buttons.append([InlineKeyboardButton(text="👁 Предпросмотр", callback_data=f"preview_{pid}")])
+        buttons.append([InlineKeyboardButton(text="⏰ Изменить время",   callback_data=f"edit_time_{pid}")])
+        buttons.append([InlineKeyboardButton(text="🔁 Перепланировать",  callback_data=f"replan_{pid}")])
+    buttons.append([InlineKeyboardButton(text="👁 Предпросмотр",          callback_data=f"preview_{pid}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def failed_post_keyboard(pid: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Редактировать текст", callback_data=f"edit_text_{pid}")],
+        [InlineKeyboardButton(text="📸 Редактировать фото",  callback_data=f"edit_photo_{pid}")],
+        [InlineKeyboardButton(text="🚀 Опубликовать сейчас", callback_data=f"publish_now_{pid}")],
+        [InlineKeyboardButton(text="⏰ Запланировать снова", callback_data=f"replan_{pid}")],
+        [InlineKeyboardButton(text="🗑 Удалить",             callback_data=f"delete_failed_{pid}")],
+    ])
 
-# ─── РУКОВОДСТВО ПО ФОРМАТИРОВАНИЮ ───────────────────────────────────────────
+
+# ─── ФОРМАТИРОВАНИЕ ──────────────────────────────────────────────────────────
 def format_guide() -> str:
     return (
-        "✍️ <b>Напиши текст поста.</b>\n\n"
-        "Поддерживается HTML-форматирование:\n"
+        "✍️ <b>Напиши текст поста:</b>\n\n"
+        "Форматирование:\n"
         "• <code>&lt;b&gt;текст&lt;/b&gt;</code> → <b>жирный</b>\n"
         "• <code>&lt;i&gt;текст&lt;/i&gt;</code> → <i>курсив</i>\n"
         "• <code>&lt;u&gt;текст&lt;/u&gt;</code> → <u>подчёркнутый</u>\n"
         "• <code>&lt;s&gt;текст&lt;/s&gt;</code> → <s>зачёркнутый</s>\n"
-        "• <code>&lt;code&gt;текст&lt;/code&gt;</code> → <code>моноширинный</code>\n"
-        "• <code>&lt;tg-spoiler&gt;текст&lt;/tg-spoiler&gt;</code> → скрытый спойлер\n\n"
-        "<b>Пример:</b>\n"
-        "<code>Привет! Это &lt;b&gt;жирный&lt;/b&gt; и &lt;i&gt;курсивный&lt;/i&gt; текст.</code>\n\n"
-        "Напиши текст 👇"
+        "• <code>&lt;tg-spoiler&gt;текст&lt;/tg-spoiler&gt;</code> → спойлер\n\n"
+        "👇"
     )
 
 
-# ─── ПУБЛИКАЦИЯ ───────────────────────────────────────────────────────────────
+# ─── ПУБЛИКАЦИЯ ──────────────────────────────────────────────────────────────
 async def publish_post(post_id: int):
-    global published_posts
+    global stats
     post = scheduled_posts.get(post_id)
     if not post:
         return
     try:
-        photo   = post.get("photo")
-        text    = post.get("text", "")
+        photo = post.get("photo")
+        text  = post.get("text", "")
+
         if photo:
-            msg = await bot.send_photo(chat_id=CHANNEL_ID, photo=photo, caption=text, parse_mode="HTML")
+            # Telegram ограничение: подпись макс 1024 символа
+            if len(text) > 1024:
+                msg = await bot.send_photo(chat_id=CHANNEL_ID, photo=photo, parse_mode="HTML")
+                await bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="HTML")
+            else:
+                msg = await bot.send_photo(chat_id=CHANNEL_ID, photo=photo, caption=text, parse_mode="HTML")
         else:
             msg = await bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="HTML")
 
@@ -120,33 +147,57 @@ async def publish_post(post_id: int):
             "message_id":   msg.message_id,
             "published_at": datetime.now(pytz.timezone(TIMEZONE)),
         }
+        stats["published"] += 1
+
         await bot.send_message(
             chat_id=post["creator_id"],
-            text=f"✅ Пост <b>#{post_id}</b> опубликован!\n\nМожешь редактировать его через <b>«✏️ Редактировать»</b>",
+            text=f"✅ Пост <b>#{post_id}</b> опубликован!\n\nРедактируй через <b>«✏️ Редактировать»</b>",
             parse_mode="HTML",
             reply_markup=main_menu()
         )
         logger.info(f"Post #{post_id} published")
+
     except Exception as e:
         logger.error(f"Failed to publish post #{post_id}: {e}")
-        await bot.send_message(chat_id=post["creator_id"], text=f"⚠️ Ошибка публикации поста #{post_id}: {e}")
+        stats["failed"] += 1
+
+        # Сохраняем в раздел ошибок
+        failed_posts[post_id] = {
+            **post,
+            "error":     str(e),
+            "failed_at": datetime.now(pytz.timezone(TIMEZONE)),
+        }
+
+        await bot.send_message(
+            chat_id=post["creator_id"],
+            text=(
+                f"⚠️ <b>Ошибка публикации поста #{post_id}!</b>\n\n"
+                f"❌ Причина: <code>{e}</code>\n\n"
+                f"Пост сохранён в разделе <b>«⚠️ Ошибки постов»</b> — "
+                f"ты можешь его отредактировать и опубликовать заново."
+            ),
+            parse_mode="HTML",
+            reply_markup=main_menu()
+        )
     finally:
         scheduled_posts.pop(post_id, None)
 
 
-# ─── /start ───────────────────────────────────────────────────────────────────
+# ─── /start ──────────────────────────────────────────────────────────────────
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "👋 <b>Привет! Я бот для планирования постов.</b>\n\n"
         "Что умею:\n"
-        "• 📸 Принимать фото и текст\n"
-        "• 🎨 Форматирование: <b>жирный</b>, <i>курсив</i>, <u>подчёркнутый</u> и др.\n"
-        "• 👁 Предпросмотр поста перед публикацией\n"
-        "• ⏰ Планировать время публикации\n"
-        "• ✏️ Редактировать запланированные посты\n"
-        "• 📰 Редактировать уже опубликованные посты\n\n"
+        "• 📝 Создавать и планировать посты\n"
+        "• 👁 Предпросмотр с форматированием\n"
+        "• ✏️ Редактировать запланированные и опубликованные\n"
+        "• ⚠️ Сохранять посты с ошибками для исправления\n"
+        "• 📅 Показывать расписание на неделю\n"
+        "• 📊 Статистика публикаций\n"
+        "• ⏱ Шаблоны для быстрого создания\n"
+        "• 🔁 Повторная публикация старых постов\n\n"
         "Выбери действие 👇",
         parse_mode="HTML",
         reply_markup=main_menu()
@@ -158,11 +209,59 @@ async def cmd_start(message: types.Message, state: FSMContext):
 async def create_post_start(message: types.Message, state: FSMContext):
     await state.clear()
     await state.set_state(PostForm.waiting_for_image)
-    await message.answer(
-        "📸 <b>Шаг 1/3 — Фотография</b>\n\nОтправь картинку или нажми кнопку ниже.",
+
+    # Показываем шаблоны если есть
+    uid = message.from_user.id
+    user_templates = {k: v for k, v in templates.items() if v["creator_id"] == uid}
+
+    if user_templates:
+        buttons = [[InlineKeyboardButton(text=f"⏱ {name}", callback_data=f"use_template_{name}")]
+                   for name in user_templates.keys()]
+        buttons.append([InlineKeyboardButton(text="📝 Создать с нуля", callback_data="create_from_scratch")])
+        await message.answer(
+            "У тебя есть сохранённые шаблоны. Использовать?",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    else:
+        await message.answer(
+            "📸 <b>Шаг 1/3 — Фото</b>\n\nОтправь картинку или пропусти.",
+            parse_mode="HTML",
+            reply_markup=skip_keyboard()
+        )
+
+@dp.callback_query(F.data == "create_from_scratch")
+async def create_from_scratch(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(PostForm.waiting_for_image)
+    await callback.message.answer(
+        "📸 <b>Шаг 1/3 — Фото</b>\n\nОтправь картинку или пропусти.",
         parse_mode="HTML",
         reply_markup=skip_keyboard()
     )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("use_template_"))
+async def use_template(callback: types.CallbackQuery, state: FSMContext):
+    name = callback.data.replace("use_template_", "")
+    tmpl = templates.get(name)
+    if not tmpl:
+        await callback.answer("Шаблон не найден.")
+        return
+    await state.update_data(
+        photo=tmpl.get("photo"),
+        text=tmpl.get("text", ""),
+        creator_id=callback.from_user.id
+    )
+    await state.set_state(PostForm.waiting_for_datetime)
+    tz  = pytz.timezone(TIMEZONE)
+    now = datetime.now(tz).strftime("%d.%m.%Y %H:%M")
+    await callback.message.answer(
+        f"✅ Шаблон <b>{name}</b> загружен!\n\n"
+        f"⏰ <b>Укажи время публикации:</b>\n\nСейчас: <code>{now}</code>\n"
+        f"Формат: <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    await callback.answer()
 
 @dp.message(PostForm.waiting_for_image, F.photo)
 async def received_image(message: types.Message, state: FSMContext):
@@ -178,14 +277,13 @@ async def skip_image(message: types.Message, state: FSMContext):
 
 @dp.message(PostForm.waiting_for_text, F.text)
 async def received_text(message: types.Message, state: FSMContext):
-    await state.update_data(text=message.text)
+    await state.update_data(text=message.text, creator_id=message.from_user.id)
     await state.set_state(PostForm.waiting_for_datetime)
     tz  = pytz.timezone(TIMEZONE)
     now = datetime.now(tz).strftime("%d.%m.%Y %H:%M")
     await message.answer(
         f"✅ Текст принят!\n\n⏰ <b>Шаг 3/3 — Время публикации</b>\n\n"
-        f"Сейчас: <code>{now}</code>\n\nФормат: <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n"
-        f"Пример: <code>25.12.2025 20:00</code>",
+        f"Сейчас: <code>{now}</code>\nФормат: <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>",
         parse_mode="HTML"
     )
 
@@ -195,18 +293,18 @@ async def received_datetime(message: types.Message, state: FSMContext):
         tz         = pytz.timezone(TIMEZONE)
         publish_dt = tz.localize(datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M"))
         if publish_dt <= datetime.now(tz):
-            await message.answer("⚠️ Это время уже прошло! Введи будущее время.")
+            await message.answer("⚠️ Это время уже прошло!")
             return
-        await state.update_data(publish_at=publish_dt.isoformat(), creator_id=message.from_user.id)
+        await state.update_data(publish_at=publish_dt.isoformat())
         await state.set_state(PostForm.waiting_for_confirm)
         data = await state.get_data()
         await message.answer(
-            f"📋 <b>Пост готов к планированию</b>\n"
+            f"📋 <b>Пост готов:</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{'📸 Фото: прикреплено' if data.get('photo') else '📝 Без фото'}\n"
-            f"⏰ <b>Время:</b> <code>{publish_dt.strftime('%d.%m.%Y в %H:%M')}</code>\n"
+            f"{'📸 Фото: есть' if data.get('photo') else '📝 Без фото'}\n"
+            f"⏰ <code>{publish_dt.strftime('%d.%m.%Y в %H:%M')}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"Нажми <b>«👁 Предпросмотр»</b> чтобы увидеть как пост выглядит в канале.",
+            f"Нажми <b>«👁 Предпросмотр»</b> чтобы увидеть пост.",
             parse_mode="HTML",
             reply_markup=confirm_keyboard()
         )
@@ -214,16 +312,20 @@ async def received_datetime(message: types.Message, state: FSMContext):
         await message.answer("❌ Неверный формат! Пример: <code>25.12.2025 18:30</code>", parse_mode="HTML")
 
 
-# ─── ПРЕДПРОСМОТР ─────────────────────────────────────────────────────────────
+# ─── ПРЕДПРОСМОТР ────────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "preview_post", PostForm.waiting_for_confirm)
 async def preview_new_post(callback: types.CallbackQuery, state: FSMContext):
     data  = await state.get_data()
     photo = data.get("photo")
     text  = data.get("text", "")
     await callback.answer()
-    await callback.message.answer("👁 <b>Так пост будет выглядеть в канале:</b>", parse_mode="HTML")
+    await callback.message.answer("👁 <b>Так будет выглядеть пост:</b>", parse_mode="HTML")
     if photo:
-        await callback.message.answer_photo(photo=photo, caption=text, parse_mode="HTML")
+        if len(text) > 1024:
+            await callback.message.answer_photo(photo=photo)
+            await callback.message.answer(text, parse_mode="HTML")
+        else:
+            await callback.message.answer_photo(photo=photo, caption=text, parse_mode="HTML")
     else:
         await callback.message.answer(text, parse_mode="HTML")
     await callback.message.answer("Подтверди или отмени:", reply_markup=confirm_keyboard())
@@ -231,21 +333,50 @@ async def preview_new_post(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("preview_"))
 async def preview_existing(callback: types.CallbackQuery):
     pid  = int(callback.data.split("_")[1])
-    post = scheduled_posts.get(pid) or published_posts.get(pid)
+    post = scheduled_posts.get(pid) or published_posts.get(pid) or failed_posts.get(pid)
     if not post:
         await callback.answer("Пост не найден.")
         return
     await callback.answer()
     photo = post.get("photo")
     text  = post.get("text", "")
-    await callback.message.answer("👁 <b>Предпросмотр поста:</b>", parse_mode="HTML")
+    await callback.message.answer("👁 <b>Предпросмотр:</b>", parse_mode="HTML")
     if photo:
-        await callback.message.answer_photo(photo=photo, caption=text, parse_mode="HTML")
+        if len(text) > 1024:
+            await callback.message.answer_photo(photo=photo)
+            await callback.message.answer(text, parse_mode="HTML")
+        else:
+            await callback.message.answer_photo(photo=photo, caption=text, parse_mode="HTML")
     else:
         await callback.message.answer(text, parse_mode="HTML")
 
 
-# ─── ПОДТВЕРЖДЕНИЕ ────────────────────────────────────────────────────────────
+# ─── СОХРАНИТЬ ШАБЛОН ────────────────────────────────────────────────────────
+@dp.callback_query(F.data == "save_template", PostForm.waiting_for_confirm)
+async def save_template_start(callback: types.CallbackQuery, state: FSMContext):
+    await state.update_data(saving_template=True)
+    await callback.message.answer("💾 Введи название шаблона:")
+    await state.set_state(TemplateForm.waiting_name)
+    await callback.answer()
+
+@dp.message(TemplateForm.waiting_name, F.text)
+async def save_template_finish(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    name = message.text.strip()
+    templates[name] = {
+        "photo":      data.get("photo"),
+        "text":       data.get("text", ""),
+        "creator_id": message.from_user.id,
+    }
+    await state.set_state(PostForm.waiting_for_confirm)
+    await message.answer(
+        f"✅ Шаблон <b>{name}</b> сохранён!\n\nТеперь подтверди или отмени пост:",
+        parse_mode="HTML",
+        reply_markup=confirm_keyboard()
+    )
+
+
+# ─── ПОДТВЕРЖДЕНИЕ ───────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "confirm_post", PostForm.waiting_for_confirm)
 async def confirm_post(callback: types.CallbackQuery, state: FSMContext):
     global post_counter
@@ -276,42 +407,279 @@ async def cancel_post_cb(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# ─── МОИ ПОСТЫ ────────────────────────────────────────────────────────────────
+# ─── МОИ ПОСТЫ ───────────────────────────────────────────────────────────────
 @dp.message(F.text == "📋 Мои посты")
 async def list_posts(message: types.Message):
-    user_posts = {pid: p for pid, p in scheduled_posts.items() if p["creator_id"] == message.from_user.id}
+    uid        = message.from_user.id
+    user_posts = {pid: p for pid, p in scheduled_posts.items() if p["creator_id"] == uid}
     if not user_posts:
         await message.answer("📭 Нет запланированных постов.", reply_markup=main_menu())
         return
     text = "📋 <b>Запланированные посты:</b>\n\n"
-    for pid, post in user_posts.items():
+    for pid, post in sorted(user_posts.items(), key=lambda x: x[1]["publish_at"]):
         dt      = post["publish_at"].strftime("%d.%m.%Y в %H:%M")
         icon    = "📸" if post.get("photo") else "📝"
         preview = (post["text"][:50] + "...") if len(post["text"]) > 50 else post["text"]
-        text   += f"{icon} <b>Пост #{pid}</b> — ⏰ {dt}\n💬 {preview}\n\n"
+        text   += f"{icon} <b>#{pid}</b> — ⏰ {dt}\n💬 {preview}\n\n"
     await message.answer(text, parse_mode="HTML", reply_markup=main_menu())
 
 
-# ─── ОПУБЛИКОВАННЫЕ ───────────────────────────────────────────────────────────
+# ─── ОПУБЛИКОВАННЫЕ ──────────────────────────────────────────────────────────
 @dp.message(F.text == "📰 Опубликованные")
 async def list_published(message: types.Message):
-    user_posts = {pid: p for pid, p in published_posts.items() if p["creator_id"] == message.from_user.id}
+    uid        = message.from_user.id
+    user_posts = {pid: p for pid, p in published_posts.items() if p["creator_id"] == uid}
     if not user_posts:
         await message.answer("📭 Нет опубликованных постов.", reply_markup=main_menu())
         return
     text = "📰 <b>Опубликованные посты:</b>\n\n"
-    for pid, post in user_posts.items():
+    for pid, post in sorted(user_posts.items(), key=lambda x: x[1]["published_at"], reverse=True):
         dt      = post["published_at"].strftime("%d.%m.%Y в %H:%M")
         icon    = "📸" if post.get("photo") else "📝"
         preview = (post["text"][:50] + "...") if len(post["text"]) > 50 else post["text"]
-        text   += f"{icon} <b>Пост #{pid}</b> — 📅 {dt}\n💬 {preview}\n\n"
+        text   += f"{icon} <b>#{pid}</b> — 📅 {dt}\n💬 {preview}\n\n"
     await message.answer(text, parse_mode="HTML", reply_markup=main_menu())
 
 
-# ─── ОТМЕНА ПОСТА ─────────────────────────────────────────────────────────────
+# ─── ОШИБКИ ПОСТОВ ───────────────────────────────────────────────────────────
+@dp.message(F.text == "⚠️ Ошибки постов")
+async def list_failed(message: types.Message):
+    uid        = message.from_user.id
+    user_posts = {pid: p for pid, p in failed_posts.items() if p["creator_id"] == uid}
+    if not user_posts:
+        await message.answer("✅ Постов с ошибками нет!", reply_markup=main_menu())
+        return
+
+    await message.answer(
+        f"⚠️ <b>Посты с ошибками: {len(user_posts)}</b>\n\nВыбери пост для исправления:",
+        parse_mode="HTML"
+    )
+    for pid, post in user_posts.items():
+        dt      = post["failed_at"].strftime("%d.%m.%Y в %H:%M")
+        icon    = "📸" if post.get("photo") else "📝"
+        preview = (post["text"][:60] + "...") if len(post["text"]) > 60 else post["text"]
+        error   = post.get("error", "Неизвестная ошибка")
+
+        await message.answer(
+            f"⚠️ <b>Пост #{pid}</b>\n"
+            f"{icon} Время ошибки: {dt}\n"
+            f"❌ Причина: <code>{error}</code>\n\n"
+            f"💬 {preview}",
+            parse_mode="HTML",
+            reply_markup=failed_post_keyboard(pid)
+        )
+
+# Опубликовать сейчас из ошибок
+@dp.callback_query(F.data.startswith("publish_now_"))
+async def publish_now(callback: types.CallbackQuery):
+    global post_counter, stats
+    pid  = int(callback.data.split("_")[2])
+    post = failed_posts.get(pid)
+    if not post:
+        await callback.answer("Пост не найден.")
+        return
+
+    await callback.answer()
+    msg = await callback.message.answer("🚀 Публикую...")
+
+    try:
+        photo = post.get("photo")
+        text  = post.get("text", "")
+
+        if photo:
+            if len(text) > 1024:
+                sent = await bot.send_photo(chat_id=CHANNEL_ID, photo=photo)
+                await bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="HTML")
+            else:
+                sent = await bot.send_photo(chat_id=CHANNEL_ID, photo=photo, caption=text, parse_mode="HTML")
+        else:
+            sent = await bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="HTML")
+
+        published_posts[pid] = {
+            **post,
+            "message_id":   sent.message_id,
+            "published_at": datetime.now(pytz.timezone(TIMEZONE)),
+        }
+        failed_posts.pop(pid, None)
+        stats["published"] += 1
+
+        await msg.edit_text(f"✅ Пост <b>#{pid}</b> успешно опубликован!", parse_mode="HTML")
+        await callback.message.answer("Что делаем дальше?", reply_markup=main_menu())
+
+    except Exception as e:
+        await msg.edit_text(f"⚠️ Снова ошибка: <code>{e}</code>", parse_mode="HTML")
+
+# Удалить из ошибок
+@dp.callback_query(F.data.startswith("delete_failed_"))
+async def delete_failed(callback: types.CallbackQuery):
+    pid = int(callback.data.split("_")[2])
+    if pid in failed_posts:
+        failed_posts.pop(pid)
+        await callback.message.edit_text(f"🗑 Пост <b>#{pid}</b> удалён из ошибок.", parse_mode="HTML")
+    await callback.answer()
+
+
+# ─── РАСПИСАНИЕ ──────────────────────────────────────────────────────────────
+@dp.message(F.text == "📅 Расписание")
+async def show_schedule(message: types.Message):
+    uid        = message.from_user.id
+    user_posts = {pid: p for pid, p in scheduled_posts.items() if p["creator_id"] == uid}
+
+    if not user_posts:
+        await message.answer("📭 Нет запланированных постов.", reply_markup=main_menu())
+        return
+
+    tz       = pytz.timezone(TIMEZONE)
+    now      = datetime.now(tz)
+    sorted_p = sorted(user_posts.items(), key=lambda x: x[1]["publish_at"])
+
+    text = "📅 <b>Расписание постов:</b>\n\n"
+
+    current_date = None
+    for pid, post in sorted_p:
+        dt   = post["publish_at"]
+        date = dt.strftime("%d.%m.%Y")
+        time = dt.strftime("%H:%M")
+
+        if date != current_date:
+            current_date = date
+            # Определяем день недели
+            weekdays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            wd       = weekdays[dt.weekday()]
+            today    = "🔵 Сегодня" if dt.date() == now.date() else f"📆 {wd}, {date}"
+            text    += f"\n{today}\n"
+
+        icon    = "📸" if post.get("photo") else "📝"
+        preview = (post["text"][:30] + "...") if len(post["text"]) > 30 else post["text"]
+        text   += f"  ⏰ {time} {icon} <b>#{pid}</b> — {preview}\n"
+
+    await message.answer(text, parse_mode="HTML", reply_markup=main_menu())
+
+
+# ─── СТАТИСТИКА ──────────────────────────────────────────────────────────────
+@dp.message(F.text == "📊 Статистика")
+async def show_stats(message: types.Message):
+    uid         = message.from_user.id
+    scheduled   = len([p for p in scheduled_posts.values() if p["creator_id"] == uid])
+    published   = len([p for p in published_posts.values() if p["creator_id"] == uid])
+    failed      = len([p for p in failed_posts.values()    if p["creator_id"] == uid])
+    tmpl_count  = len([t for t in templates.values()       if t["creator_id"] == uid])
+
+    total = published + failed
+    rate  = round(published / total * 100) if total > 0 else 0
+
+    await message.answer(
+        f"📊 <b>Статистика публикаций:</b>\n\n"
+        f"📋 Запланировано сейчас: <b>{scheduled}</b>\n"
+        f"✅ Успешно опубликовано: <b>{published}</b>\n"
+        f"⚠️ С ошибками: <b>{failed}</b>\n"
+        f"⏱ Шаблонов: <b>{tmpl_count}</b>\n\n"
+        f"📈 Успешность: <b>{rate}%</b>\n\n"
+        f"{'🎉 Отличная работа!' if rate >= 90 else '💪 Есть над чем поработать!'}",
+        parse_mode="HTML",
+        reply_markup=main_menu()
+    )
+
+
+# ─── ШАБЛОНЫ ─────────────────────────────────────────────────────────────────
+@dp.message(F.text == "⏱ Шаблоны")
+async def show_templates(message: types.Message):
+    uid            = message.from_user.id
+    user_templates = {k: v for k, v in templates.items() if v["creator_id"] == uid}
+
+    if not user_templates:
+        await message.answer(
+            "📭 У тебя нет шаблонов.\n\nСоздай пост и нажми <b>«💾 Сохранить шаблон»</b>",
+            parse_mode="HTML",
+            reply_markup=main_menu()
+        )
+        return
+
+    buttons = []
+    for name in user_templates.keys():
+        buttons.append([
+            InlineKeyboardButton(text=f"⏱ {name}", callback_data=f"use_template_{name}"),
+            InlineKeyboardButton(text="🗑",          callback_data=f"del_template_{name}"),
+        ])
+
+    await message.answer(
+        "⏱ <b>Твои шаблоны:</b>\n\nНажми на шаблон чтобы использовать:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+    )
+
+@dp.callback_query(F.data.startswith("del_template_"))
+async def delete_template(callback: types.CallbackQuery):
+    name = callback.data.replace("del_template_", "")
+    if name in templates:
+        templates.pop(name)
+        await callback.message.edit_text(f"🗑 Шаблон <b>{name}</b> удалён.", parse_mode="HTML")
+    await callback.answer()
+
+
+# ─── ПОВТОРНАЯ ПУБЛИКАЦИЯ ────────────────────────────────────────────────────
+@dp.callback_query(F.data.startswith("replan_"))
+async def replan_post(callback: types.CallbackQuery, state: FSMContext):
+    pid  = int(callback.data.split("_")[1])
+    post = failed_posts.get(pid) or scheduled_posts.get(pid)
+    if not post:
+        await callback.answer("Пост не найден.")
+        return
+
+    await state.update_data(replan_pid=pid)
+    await state.set_state(RepeatForm.waiting_datetime)
+    tz  = pytz.timezone(TIMEZONE)
+    now = datetime.now(tz).strftime("%d.%m.%Y %H:%M")
+    await callback.message.answer(
+        f"🔁 <b>Запланировать пост #{pid} заново</b>\n\n"
+        f"Сейчас: <code>{now}</code>\nФормат: <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.message(RepeatForm.waiting_datetime, F.text)
+async def replan_datetime(message: types.Message, state: FSMContext):
+    global post_counter
+    data = await state.get_data()
+    pid  = data["replan_pid"]
+    post = failed_posts.get(pid) or scheduled_posts.get(pid)
+
+    try:
+        tz         = pytz.timezone(TIMEZONE)
+        publish_dt = tz.localize(datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M"))
+        if publish_dt <= datetime.now(tz):
+            await message.answer("⚠️ Это время уже прошло!")
+            return
+
+        # Если был в ошибках — убираем оттуда
+        if pid in failed_posts:
+            failed_posts.pop(pid)
+
+        # Планируем заново
+        scheduled_posts[pid] = {**post, "publish_at": publish_dt}
+        try:
+            scheduler.remove_job(f"post_{pid}")
+        except Exception:
+            pass
+        scheduler.add_job(publish_post, trigger=DateTrigger(run_date=publish_dt), args=[pid], id=f"post_{pid}")
+
+        await message.answer(
+            f"✅ Пост <b>#{pid}</b> запланирован заново!\n📅 <code>{publish_dt.strftime('%d.%m.%Y в %H:%M')}</code>",
+            parse_mode="HTML",
+            reply_markup=main_menu()
+        )
+        await state.clear()
+
+    except ValueError:
+        await message.answer("❌ Неверный формат! Пример: <code>25.12.2025 18:30</code>", parse_mode="HTML")
+
+
+# ─── ОТМЕНА ПОСТА ────────────────────────────────────────────────────────────
 @dp.message(F.text == "❌ Отменить пост")
 async def cancel_post_menu(message: types.Message):
-    user_posts = {pid: p for pid, p in scheduled_posts.items() if p["creator_id"] == message.from_user.id}
+    global stats
+    uid        = message.from_user.id
+    user_posts = {pid: p for pid, p in scheduled_posts.items() if p["creator_id"] == uid}
     if not user_posts:
         await message.answer("📭 Нет постов для отмены.", reply_markup=main_menu())
         return
@@ -321,8 +689,9 @@ async def cancel_post_menu(message: types.Message):
     )] for pid, p in user_posts.items()]
     await message.answer("Выбери пост для отмены:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-@dp.callback_query(F.data.startswith("delete_"))
+@dp.callback_query(F.data.startswith("delete_") and ~F.data.startswith("delete_failed_"))
 async def delete_post(callback: types.CallbackQuery):
+    global stats
     pid = int(callback.data.split("_")[1])
     if pid in scheduled_posts and scheduled_posts[pid]["creator_id"] == callback.from_user.id:
         try:
@@ -330,20 +699,22 @@ async def delete_post(callback: types.CallbackQuery):
         except Exception:
             pass
         scheduled_posts.pop(pid, None)
+        stats["cancelled"] += 1
         await callback.message.edit_text(f"✅ Пост <b>#{pid}</b> отменён.", parse_mode="HTML")
     else:
         await callback.message.edit_text("⚠️ Пост не найден.")
     await callback.answer()
 
 
-# ─── РЕДАКТИРОВАНИЕ ───────────────────────────────────────────────────────────
+# ─── РЕДАКТИРОВАНИЕ ──────────────────────────────────────────────────────────
 @dp.message(F.text == "✏️ Редактировать")
 async def edit_menu(message: types.Message):
     uid        = message.from_user.id
     user_sched = {pid: p for pid, p in scheduled_posts.items() if p["creator_id"] == uid}
     user_pub   = {pid: p for pid, p in published_posts.items()  if p["creator_id"] == uid}
+    user_fail  = {pid: p for pid, p in failed_posts.items()     if p["creator_id"] == uid}
 
-    if not user_sched and not user_pub:
+    if not user_sched and not user_pub and not user_fail:
         await message.answer("📭 Нет постов для редактирования.", reply_markup=main_menu())
         return
 
@@ -351,15 +722,17 @@ async def edit_menu(message: types.Message):
     if user_sched:
         buttons.append([InlineKeyboardButton(text="─── 📋 Запланированные ───", callback_data="noop")])
         for pid, p in user_sched.items():
-            dt = p["publish_at"].strftime("%d.%m %H:%M")
-            buttons.append([InlineKeyboardButton(text=f"✏️ Пост #{pid} — ⏰ {dt}", callback_data=f"editsel_{pid}_0")])
+            buttons.append([InlineKeyboardButton(text=f"✏️ #{pid} — ⏰ {p['publish_at'].strftime('%d.%m %H:%M')}", callback_data=f"editsel_{pid}_0")])
     if user_pub:
         buttons.append([InlineKeyboardButton(text="─── 📰 Опубликованные ───", callback_data="noop")])
         for pid, p in user_pub.items():
-            dt = p["published_at"].strftime("%d.%m %H:%M")
-            buttons.append([InlineKeyboardButton(text=f"✏️ Пост #{pid} — 📅 {dt}", callback_data=f"editsel_{pid}_1")])
+            buttons.append([InlineKeyboardButton(text=f"✏️ #{pid} — 📅 {p['published_at'].strftime('%d.%m %H:%M')}", callback_data=f"editsel_{pid}_1")])
+    if user_fail:
+        buttons.append([InlineKeyboardButton(text="─── ⚠️ С ошибками ───", callback_data="noop")])
+        for pid, p in user_fail.items():
+            buttons.append([InlineKeyboardButton(text=f"✏️ #{pid} — ⚠️ ошибка", callback_data=f"editsel_{pid}_2")])
 
-    await message.answer("Выбери пост для редактирования:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await message.answer("Выбери пост:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 @dp.callback_query(F.data == "noop")
 async def noop(callback: types.CallbackQuery):
@@ -369,33 +742,33 @@ async def noop(callback: types.CallbackQuery):
 async def edit_select(callback: types.CallbackQuery, state: FSMContext):
     parts  = callback.data.split("_")
     pid    = int(parts[1])
-    is_pub = parts[2] == "1"
-    post   = published_posts.get(pid) if is_pub else scheduled_posts.get(pid)
+    ptype  = parts[2]  # 0=scheduled, 1=published, 2=failed
+    is_pub = ptype == "1"
+    post   = published_posts.get(pid) if is_pub else (failed_posts.get(pid) if ptype == "2" else scheduled_posts.get(pid))
+
     if not post:
         await callback.answer("Пост не найден.")
         return
 
-    await state.update_data(editing_pid=pid, is_published=is_pub)
+    await state.update_data(editing_pid=pid, is_published=is_pub, is_failed=ptype == "2")
     await state.set_state(EditForm.choosing_field)
 
     icon    = "📸" if post.get("photo") else "📝"
     preview = (post["text"][:60] + "...") if len(post["text"]) > 60 else post["text"]
-    status  = f"📅 Опубликован: {post['published_at'].strftime('%d.%m.%Y %H:%M')}" if is_pub else f"⏰ Запланирован: {post['publish_at'].strftime('%d.%m.%Y %H:%M')}"
 
     await callback.message.edit_text(
-        f"✏️ <b>Редактирование поста #{pid}</b>\n\n{icon} {status}\n💬 {preview}\n\nЧто изменить?",
+        f"✏️ <b>Редактирование поста #{pid}</b>\n\n{icon} {preview}\n\nЧто изменить?",
         parse_mode="HTML",
         reply_markup=edit_field_keyboard(pid, is_pub)
     )
     await callback.answer()
 
-# Изменить текст
 @dp.callback_query(F.data.startswith("edit_text_"))
 async def edit_text_start(callback: types.CallbackQuery, state: FSMContext):
     pid = int(callback.data.split("_")[2])
     await state.update_data(editing_pid=pid)
     await state.set_state(EditForm.editing_text)
-    await callback.message.answer("✍️ <b>Введи новый текст поста:</b>\n\n" + format_guide(), parse_mode="HTML")
+    await callback.message.answer("✍️ <b>Введи новый текст:</b>\n\n" + format_guide(), parse_mode="HTML")
     await callback.answer()
 
 @dp.message(EditForm.editing_text, F.text)
@@ -403,6 +776,7 @@ async def edit_text_save(message: types.Message, state: FSMContext):
     data     = await state.get_data()
     pid      = data["editing_pid"]
     is_pub   = data.get("is_published", False)
+    is_fail  = data.get("is_failed", False)
     new_text = message.text
 
     if is_pub and pid in published_posts:
@@ -410,12 +784,16 @@ async def edit_text_save(message: types.Message, state: FSMContext):
         post = published_posts[pid]
         try:
             if post.get("photo"):
-                await bot.edit_message_caption(chat_id=CHANNEL_ID, message_id=post["message_id"], caption=new_text, parse_mode="HTML")
+                if len(new_text) <= 1024:
+                    await bot.edit_message_caption(chat_id=CHANNEL_ID, message_id=post["message_id"], caption=new_text, parse_mode="HTML")
             else:
                 await bot.edit_message_text(chat_id=CHANNEL_ID, message_id=post["message_id"], text=new_text, parse_mode="HTML")
             await message.answer(f"✅ Текст поста <b>#{pid}</b> обновлён в канале!", parse_mode="HTML", reply_markup=main_menu())
         except Exception as e:
             await message.answer(f"⚠️ Ошибка: {e}", reply_markup=main_menu())
+    elif is_fail and pid in failed_posts:
+        failed_posts[pid]["text"] = new_text
+        await message.answer(f"✅ Текст поста <b>#{pid}</b> обновлён!\n\nТеперь можешь опубликовать его через <b>«⚠️ Ошибки постов»</b>", parse_mode="HTML", reply_markup=main_menu())
     elif pid in scheduled_posts:
         scheduled_posts[pid]["text"] = new_text
         await message.answer(f"✅ Текст поста <b>#{pid}</b> обновлён!", parse_mode="HTML", reply_markup=main_menu())
@@ -423,7 +801,6 @@ async def edit_text_save(message: types.Message, state: FSMContext):
         await message.answer("⚠️ Пост не найден.", reply_markup=main_menu())
     await state.clear()
 
-# Изменить фото
 @dp.callback_query(F.data.startswith("edit_photo_"))
 async def edit_photo_start(callback: types.CallbackQuery, state: FSMContext):
     pid = int(callback.data.split("_")[2])
@@ -437,11 +814,12 @@ async def edit_photo_save(message: types.Message, state: FSMContext):
     data      = await state.get_data()
     pid       = data["editing_pid"]
     is_pub    = data.get("is_published", False)
+    is_fail   = data.get("is_failed", False)
     new_photo = message.photo[-1].file_id
 
-    if is_pub and pid in published_posts:
-        published_posts[pid]["photo"] = new_photo
-        await message.answer(f"✅ Фото обновлено в базе поста <b>#{pid}</b>.\n\n⚠️ Telegram не позволяет менять медиафайл в уже опубликованном сообщении — изменение сохранено для следующей публикации.", parse_mode="HTML", reply_markup=main_menu())
+    if is_fail and pid in failed_posts:
+        failed_posts[pid]["photo"] = new_photo
+        await message.answer(f"✅ Фото поста <b>#{pid}</b> обновлено!", parse_mode="HTML", reply_markup=main_menu())
     elif pid in scheduled_posts:
         scheduled_posts[pid]["photo"] = new_photo
         await message.answer(f"✅ Фото поста <b>#{pid}</b> обновлено!", parse_mode="HTML", reply_markup=main_menu())
@@ -449,7 +827,6 @@ async def edit_photo_save(message: types.Message, state: FSMContext):
         await message.answer("⚠️ Пост не найден.", reply_markup=main_menu())
     await state.clear()
 
-# Изменить время
 @dp.callback_query(F.data.startswith("edit_time_"))
 async def edit_time_start(callback: types.CallbackQuery, state: FSMContext):
     pid = int(callback.data.split("_")[2])
@@ -458,7 +835,7 @@ async def edit_time_start(callback: types.CallbackQuery, state: FSMContext):
     tz  = pytz.timezone(TIMEZONE)
     now = datetime.now(tz).strftime("%d.%m.%Y %H:%M")
     await callback.message.answer(
-        f"⏰ <b>Введи новое время публикации:</b>\n\nСейчас: <code>{now}</code>\nФормат: <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>",
+        f"⏰ <b>Новое время публикации:</b>\n\nСейчас: <code>{now}</code>\nФормат: <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>",
         parse_mode="HTML"
     )
     await callback.answer()
@@ -471,7 +848,7 @@ async def edit_time_save(message: types.Message, state: FSMContext):
         tz         = pytz.timezone(TIMEZONE)
         publish_dt = tz.localize(datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M"))
         if publish_dt <= datetime.now(tz):
-            await message.answer("⚠️ Это время уже прошло! Введи будущее время.")
+            await message.answer("⚠️ Это время уже прошло!")
             return
         if pid in scheduled_posts:
             scheduled_posts[pid]["publish_at"] = publish_dt
@@ -492,7 +869,7 @@ async def edit_time_save(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-# ─── ЗАПУСК ───────────────────────────────────────────────────────────────────
+# ─── ЗАПУСК ──────────────────────────────────────────────────────────────────
 async def main():
     scheduler.start()
     logger.info("Bot started. Scheduler running.")
