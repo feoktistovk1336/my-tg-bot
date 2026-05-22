@@ -2,61 +2,100 @@ import os
 import asyncio
 import random
 import logging
-from datetime import datetime
-
 import aiohttp
-import pytz
 
-from aiogram import Bot, Dispatcher, F, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import *
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.date import DateTrigger
+# =========================
+# CONFIG
+# =========================
 
-
-# ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")  # 🔥 FIX: НЕ int()
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-TZ = pytz.timezone("Europe/Moscow")
+CHANNEL_ID_RAW = os.getenv("CHANNEL_ID")  # @channel or -100123
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
+
+CHANNEL_ID = (
+    int(CHANNEL_ID_RAW) if CHANNEL_ID_RAW and CHANNEL_ID_RAW.lstrip("-").isdigit()
+    else CHANNEL_ID_RAW
+)
+
+# =========================
+# LOGGING
+# =========================
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("AI_BOT")
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
-scheduler = AsyncIOScheduler(timezone=TZ)
+# =========================
+# BOT INIT
+# =========================
 
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 
-# ================= STORAGE =================
-posts = {}
-published = {}
-failed = {}
-templates = {}
+dp = Dispatcher()
 
-counter = 0
+# =========================
+# TOPICS
+# =========================
 
-
-# ================= STATES =================
-class PostFSM(StatesGroup):
-    text = State()
-    datetime = State()
-
-
-# ================= AI =================
 TOPICS = [
-    "AI заменяет дизайнеров",
-    "Будущее нейросетей",
-    "AI видео революция",
-    "Автоматизация бизнеса",
-    "Контент будущего",
+    "AI меняет мир",
+    "Будущее контента",
+    "Вирусные нейросети",
+    "AI video generation",
+    "TikTok алгоритмы",
+    "Instagram рост",
+    "Digital creator 2026",
+    "AI tools для заработка",
 ]
 
+# =========================
+# PREMIUM AI STYLE
+# =========================
+
+AI_SYSTEM = """
+Ты premium AI creator уровня топового Instagram/TikTok блогера.
+
+Стиль:
+- cinematic
+- дорогой визуальный стиль
+- вирусные hooks
+- эмоциональный сторителлинг
+- Gen Z / TikTok tone
+
+Правила:
+- всегда начинай с сильного HOOK
+- короткие абзацы
+- emoji уместно
+- финал = CTA
+"""
+
+# =========================
+# KEYBOARD
+# =========================
+
+def main_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🤖 AI пост")],
+            [KeyboardButton(text="🎬 AI reels")],
+            [KeyboardButton(text="📸 AI карусель")],
+        ],
+        resize_keyboard=True
+    )
+
+# =========================
+# GROQ API
+# =========================
 
 async def ask_groq(prompt: str):
     headers = {
@@ -67,197 +106,129 @@ async def ask_groq(prompt: str):
     payload = {
         "model": "llama-3.3-70b-versatile",
         "messages": [
-            {"role": "system", "content": "Ты вирусный Telegram копирайтер."},
+            {"role": "system", "content": AI_SYSTEM},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.9
     }
 
-    async with aiohttp.ClientSession() as s:
-        async with s.post(
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers=headers,
             json=payload
-        ) as r:
-            data = await r.json()
+        ) as resp:
+            data = await resp.json()
             return data["choices"][0]["message"]["content"]
 
+# =========================
+# AI CONTENT
+# =========================
 
-async def generate_post():
-    topic = random.choice(TOPICS)
+async def ai_post(topic: str):
+    prompt = f"""
+Создай вирусный Telegram пост.
 
-    return await ask_groq(f"""
-    Напиши вирусный Telegram пост.
-    Тема: {topic}
+Тема: {topic}
 
-    - 80-120 слов
-    - сильный hook
-    - emoji
-    - CTA в конце
-    """)
-
-
-# ================= KEYBOARD =================
-def menu():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🤖 AI пост")],
-            [KeyboardButton(text="📝 Создать пост")],
-            [KeyboardButton(text="📋 Посты"), KeyboardButton(text="📊 Статистика")]
-        ],
-        resize_keyboard=True
-    )
+80–120 слов.
+"""
+    return await ask_groq(prompt)
 
 
-def confirm_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Опубликовать", callback_data="publish")],
-        [InlineKeyboardButton(text="⏰ Запланировать", callback_data="schedule")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")]
-    ])
+async def ai_reels(topic: str):
+    prompt = f"""
+Создай сценарий Instagram/TikTok Reels:
+
+Тема: {topic}
+
+Формат:
+HOOK → PROBLEM → BUILD → PAYOFF → CTA
+"""
+    return await ask_groq(prompt)
 
 
-# ================= SAFE CHANNEL =================
-async def send_to_channel(text: str):
-    return await bot.send_message(
-        chat_id=CHANNEL_ID,
-        text=text
-    )
+async def ai_carousel(topic: str):
+    prompt = f"""
+Создай Instagram carousel (6 слайдов):
 
+Тема: {topic}
 
-# ================= START =================
+Slide 1 = hook
+Slide 2-5 = value
+Slide 6 = CTA
+"""
+    return await ask_groq(prompt)
+
+# =========================
+# HANDLERS
+# =========================
+
 @dp.message(Command("start"))
-async def start(m: Message):
-    if m.from_user.id != ADMIN_ID:
-        return
-    await m.answer("🚀 SaaS Bot V3 FIXED запущен", reply_markup=menu())
-
-
-# ================= AI POST =================
-@dp.message(F.text == "🤖 AI пост")
-async def ai_post(m: Message, state: FSMContext):
-    text = await generate_post()
-    await state.update_data(text=text)
-
-    await m.answer(text, reply_markup=confirm_kb())
-
-
-# ================= CREATE POST =================
-@dp.message(F.text == "📝 Создать пост")
-async def create(m: Message, state: FSMContext):
-    await state.set_state(PostFSM.text)
-    await m.answer("✍️ Введи текст")
-
-
-@dp.message(PostFSM.text)
-async def get_text(m: Message, state: FSMContext):
-    await state.update_data(text=m.text)
-    await state.set_state(PostFSM.datetime)
-    await m.answer("⏰ Введи дату (ДД.ММ.ГГГГ ЧЧ:ММ)")
-
-
-@dp.message(PostFSM.datetime)
-async def get_time(m: Message, state: FSMContext):
-    global counter
-
-    try:
-        dt = datetime.strptime(m.text, "%d.%m.%Y %H:%M")
-        dt = TZ.localize(dt)
-
-        data = await state.get_data()
-        await state.clear()
-
-        counter += 1
-        pid = counter
-
-        posts[pid] = {
-            "text": data["text"],
-            "time": dt
-        }
-
-        scheduler.add_job(
-            send_post,
-            DateTrigger(run_date=dt),
-            args=[pid],
-            id=str(pid)
-        )
-
-        await m.answer(f"✅ Пост #{pid} запланирован", reply_markup=menu())
-
-    except Exception:
-        await m.answer("❌ Формат: 25.12.2026 18:30")
-
-
-# ================= SEND =================
-async def send_post(pid: int):
-    post = posts.get(pid)
-    if not post:
+async def start(message: Message):
+    if message.from_user.id != ADMIN_ID:
         return
 
-    try:
-        await send_to_channel(post["text"])
-        published[pid] = post
-        posts.pop(pid, None)
-    except Exception as e:
-        failed[pid] = post
-        logging.error(e)
-
-
-# ================= LIST =================
-@dp.message(F.text == "📋 Посты")
-async def list_posts(m: Message):
-    if not posts:
-        await m.answer("Нет постов")
-        return
-
-    text = "📋 Посты:\n\n"
-    for pid, p in posts.items():
-        text += f"#{pid} — {p['time'].strftime('%d.%m %H:%M')}\n"
-
-    await m.answer(text)
-
-
-# ================= STATS =================
-@dp.message(F.text == "📊 Статистика")
-async def stats(m: Message):
-    await m.answer(
-        f"📊 Статистика:\n\n"
-        f"📋 scheduled: {len(posts)}\n"
-        f"✅ published: {len(published)}\n"
-        f"⚠️ failed: {len(failed)}"
+    await message.answer(
+        "🚀 AI Creator Bot запущен",
+        reply_markup=main_menu()
     )
 
+# =========================
+# AI POST
+# =========================
 
-# ================= CALLBACKS =================
-@dp.callback_query(F.data == "publish")
-async def publish(c: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    await state.clear()
+@dp.message(F.text == "🤖 AI пост")
+async def handle_post(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
 
-    await send_to_channel(data["text"])
+    await message.answer("⏳ Генерирую premium пост...")
 
-    await c.message.edit_text("🚀 Опубликовано")
-    await c.answer()
+    topic = random.choice(TOPICS)
+    text = await ai_post(topic)
 
+    await message.answer(f"🔥 <b>AI POST</b>\n\n{text}")
 
-@dp.callback_query(F.data == "schedule")
-async def schedule(c: types.CallbackQuery):
-    await c.message.answer("Используй меню создания поста")
-    await c.answer()
+# =========================
+# AI REELS
+# =========================
 
+@dp.message(F.text == "🎬 AI reels")
+async def handle_reels(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
 
-@dp.callback_query(F.data == "cancel")
-async def cancel(c: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await c.message.edit_text("❌ Отменено")
-    await c.answer()
+    await message.answer("🎬 Генерирую reels сценарий...")
 
+    topic = random.choice(TOPICS)
+    text = await ai_reels(topic)
 
-# ================= MAIN =================
+    await message.answer(f"🎬 <b>REELS SCRIPT</b>\n\n{text}")
+
+# =========================
+# AI CAROUSEL
+# =========================
+
+@dp.message(F.text == "📸 AI карусель")
+async def handle_carousel(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    await message.answer("📸 Создаю карусель...")
+
+    topic = random.choice(TOPICS)
+    text = await ai_carousel(topic)
+
+    await message.answer(f"📸 <b>CAROUSEL</b>\n\n{text}")
+
+# =========================
+# START BOT
+# =========================
+
 async def main():
-    scheduler.start()
+    logger.info("Bot started")
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
