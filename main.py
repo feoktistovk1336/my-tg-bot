@@ -75,22 +75,40 @@ async def ask_groq(prompt: str):
     }
 
    payload = {
-    "model": "llama-3.3-70b-versatile",
-    "messages": [
-        {
-            "role": "system",
-            "content": (
-                "Ты создаешь вирусный Telegram контент про AI. "
-                "Пиши как большой AI creator аккаунт. "
-                "Минимум воды. Короткие абзацы. Сильный hook."
-            )
-        },
-        {
-            "role": "user",
-            "content": prompt
-        }
-    ],
-    "temperature": 0.9
-}
+    async def ask_groq(prompt: str):
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Ты создаешь вирусный Telegram контент про AI. "
+                    "Пиши как большой AI creator аккаунт. "
+                    "Минимум воды. Короткие абзацы. Сильный hook."
+                )
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 0.9
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=payload
+        ) as response:
+
+            data = await response.json()
+
+            return data["choices"][0]["message"]["content"]
     if __name__ == "__main__":
     asyncio.run(main())
