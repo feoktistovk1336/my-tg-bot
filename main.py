@@ -69,13 +69,7 @@ TOPICS = [
 # =========================
 
 async def ask_groq(prompt: str):
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
 
-   payload = {
-    async def ask_groq(prompt: str):
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
@@ -101,6 +95,7 @@ async def ask_groq(prompt: str):
     }
 
     async with aiohttp.ClientSession() as session:
+
         async with session.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers=headers,
