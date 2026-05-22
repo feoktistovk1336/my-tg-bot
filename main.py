@@ -1117,12 +1117,7 @@ async def main():
     logger.info("Bot started. Scheduler running.")
     await dp.start_polling(bot)
  
-if __name__ == "__main__":
-    asyncio.run(main())
-
-
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-TIMEZONE = "Europe/Moscow"
 POST_TIMES = [
     "12:00",
     "18:00"
