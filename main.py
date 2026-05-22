@@ -1,25 +1,4 @@
-import asyncio
-import logging
-import random
 import os
-import aiohttp
-
-from aiogram import Bot, Dispatcher
-from aiogram.filters import Command
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, BufferedInputFile
-
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-
-# ====================================
-# CONFIG
-# ====================================
-
-BOT_TOKEN = os.getenv("8925233625:AAE0lCKhErwAggy3HBal8VjO3TWXY5IFRzI")
-CHANNEL_ID = os.getenv("@primeonix26")
-ADMIN_ID = int(os.getenv("916037494"))
-import osimport os
 import logging
 import asyncio
 from datetime import datetime
