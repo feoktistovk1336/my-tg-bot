@@ -1,12 +1,13 @@
 import os
 import asyncio
 import random
-import logging
 import aiohttp
+import aiosqlite
+import logging
 
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
@@ -16,24 +17,19 @@ from aiogram.enums import ParseMode
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-CHANNEL_ID_RAW = os.getenv("CHANNEL_ID")  # @channel or -100123
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
-CHANNEL_ID = (
-    int(CHANNEL_ID_RAW) if CHANNEL_ID_RAW and CHANNEL_ID_RAW.lstrip("-").isdigit()
-    else CHANNEL_ID_RAW
-)
+DB_PATH = "saas.db"
 
 # =========================
 # LOGGING
 # =========================
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("AI_BOT")
+logger = logging.getLogger("SAAS")
 
 # =========================
-# BOT INIT
+# BOT
 # =========================
 
 bot = Bot(
@@ -44,57 +40,76 @@ bot = Bot(
 dp = Dispatcher()
 
 # =========================
+# LIMITS (SaaS CORE)
+# =========================
+
+FREE_LIMIT = 5  # бесплатных генераций
+
+# =========================
 # TOPICS
 # =========================
 
 TOPICS = [
     "AI меняет мир",
-    "Будущее контента",
-    "Вирусные нейросети",
-    "AI video generation",
     "TikTok алгоритмы",
     "Instagram рост",
-    "Digital creator 2026",
-    "AI tools для заработка",
+    "Вирусный контент",
+    "AI видео",
+    "Digital creator",
 ]
 
-# =========================
-# PREMIUM AI STYLE
-# =========================
-
 AI_SYSTEM = """
-Ты premium AI creator уровня топового Instagram/TikTok блогера.
-
-Стиль:
-- cinematic
-- дорогой визуальный стиль
-- вирусные hooks
-- эмоциональный сторителлинг
-- Gen Z / TikTok tone
-
-Правила:
-- всегда начинай с сильного HOOK
-- короткие абзацы
-- emoji уместно
-- финал = CTA
+Ты premium AI creator.
+Стиль: cinematic, viral, emotional, Gen Z.
 """
+
+# =========================
+# DB INIT
+# =========================
+
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            usage INTEGER DEFAULT 0,
+            plan TEXT DEFAULT 'free'
+        )
+        """)
+        await db.commit()
+
+async def get_user(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT usage, plan FROM users WHERE user_id=?", (user_id,))
+        row = await cur.fetchone()
+        if not row:
+            await db.execute("INSERT INTO users (user_id, usage, plan) VALUES (?,0,'free')", (user_id,))
+            await db.commit()
+            return 0, "free"
+        return row
+
+async def increase_usage(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET usage = usage + 1 WHERE user_id=?", (user_id,))
+        await db.commit()
 
 # =========================
 # KEYBOARD
 # =========================
 
-def main_menu():
+def menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🤖 AI пост")],
             [KeyboardButton(text="🎬 AI reels")],
             [KeyboardButton(text="📸 AI карусель")],
+            [KeyboardButton(text="💳 Мой тариф")],
         ],
         resize_keyboard=True
     )
 
 # =========================
-# GROQ API
+# AI API
 # =========================
 
 async def ask_groq(prompt: str):
@@ -117,117 +132,115 @@ async def ask_groq(prompt: str):
             "https://api.groq.com/openai/v1/chat/completions",
             headers=headers,
             json=payload
-        ) as resp:
-            data = await resp.json()
+        ) as r:
+            data = await r.json()
             return data["choices"][0]["message"]["content"]
 
 # =========================
-# AI CONTENT
+# AI FUNCTIONS
 # =========================
 
-async def ai_post(topic: str):
-    prompt = f"""
-Создай вирусный Telegram пост.
+async def ai_post(topic):
+    return await ask_groq(f"Вирусный пост: {topic}")
 
-Тема: {topic}
+async def ai_reels(topic):
+    return await ask_groq(f"Reels сценарий HOOK→PAYOFF: {topic}")
 
-80–120 слов.
-"""
-    return await ask_groq(prompt)
-
-
-async def ai_reels(topic: str):
-    prompt = f"""
-Создай сценарий Instagram/TikTok Reels:
-
-Тема: {topic}
-
-Формат:
-HOOK → PROBLEM → BUILD → PAYOFF → CTA
-"""
-    return await ask_groq(prompt)
-
-
-async def ai_carousel(topic: str):
-    prompt = f"""
-Создай Instagram carousel (6 слайдов):
-
-Тема: {topic}
-
-Slide 1 = hook
-Slide 2-5 = value
-Slide 6 = CTA
-"""
-    return await ask_groq(prompt)
+async def ai_carousel(topic):
+    return await ask_groq(f"Instagram carousel 6 slides: {topic}")
 
 # =========================
-# HANDLERS
+# SAAS CHECK
+# =========================
+
+async def check_limit(user_id: int):
+    usage, plan = await get_user(user_id)
+
+    if plan == "pro":
+        return True, usage, plan
+
+    if usage >= FREE_LIMIT:
+        return False, usage, plan
+
+    return True, usage, plan
+
+# =========================
+# HANDLER WRAPPER
+# =========================
+
+async def handle_ai(message: Message, generator):
+    user_id = message.from_user.id
+
+    ok, usage, plan = await check_limit(user_id)
+
+    if not ok:
+        await message.answer(
+            "❌ Лимит бесплатного тарифа исчерпан.\n"
+            "💳 Обнови тариф для продолжения."
+        )
+        return
+
+    topic = random.choice(TOPICS)
+
+    await message.answer("⏳ Генерация AI контента...")
+
+    text = await generator(topic)
+
+    await increase_usage(user_id)
+
+    await message.answer(
+        f"🔥 <b>AI CONTENT</b>\n\n{text}\n\n"
+        f"📊 Usage: {usage + 1}/{FREE_LIMIT if plan=='free' else '∞'}"
+    )
+
+# =========================
+# COMMANDS
 # =========================
 
 @dp.message(Command("start"))
 async def start(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
     await message.answer(
-        "🚀 AI Creator Bot запущен",
-        reply_markup=main_menu()
+        "🚀 AI SaaS Bot V4 запущен",
+        reply_markup=menu()
     )
 
 # =========================
-# AI POST
+# AI BUTTONS
 # =========================
 
 @dp.message(F.text == "🤖 AI пост")
-async def handle_post(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    await message.answer("⏳ Генерирую premium пост...")
-
-    topic = random.choice(TOPICS)
-    text = await ai_post(topic)
-
-    await message.answer(f"🔥 <b>AI POST</b>\n\n{text}")
-
-# =========================
-# AI REELS
-# =========================
+async def post_handler(message: Message):
+    await handle_ai(message, ai_post)
 
 @dp.message(F.text == "🎬 AI reels")
-async def handle_reels(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    await message.answer("🎬 Генерирую reels сценарий...")
-
-    topic = random.choice(TOPICS)
-    text = await ai_reels(topic)
-
-    await message.answer(f"🎬 <b>REELS SCRIPT</b>\n\n{text}")
-
-# =========================
-# AI CAROUSEL
-# =========================
+async def reels_handler(message: Message):
+    await handle_ai(message, ai_reels)
 
 @dp.message(F.text == "📸 AI карусель")
-async def handle_carousel(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    await message.answer("📸 Создаю карусель...")
-
-    topic = random.choice(TOPICS)
-    text = await ai_carousel(topic)
-
-    await message.answer(f"📸 <b>CAROUSEL</b>\n\n{text}")
+async def carousel_handler(message: Message):
+    await handle_ai(message, ai_carousel)
 
 # =========================
-# START BOT
+# PLAN INFO
+# =========================
+
+@dp.message(F.text == "💳 Мой тариф")
+async def plan(message: Message):
+    usage, plan = await get_user(message.from_user.id)
+
+    await message.answer(
+        f"💳 Тариф: <b>{plan}</b>\n"
+        f"📊 Использовано: <b>{usage}/{FREE_LIMIT}</b>\n\n"
+        f"{'🔥 PRO = без лимитов' if plan=='free' else '🚀 активен PRO'}"
+    )
+
+# =========================
+# MAIN
 # =========================
 
 async def main():
-    logger.info("Bot started")
+    await init_db()
+    logger.info("V4 SaaS Bot started")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
