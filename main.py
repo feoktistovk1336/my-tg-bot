@@ -16,12 +16,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # CONFIG
 # ====================================
 
-BOT_TOKEN = os.getenv("8925233625:AAE0lCKhErwAggy3HBal8VjO3TWXY5IFRzI")
-CHANNEL_ID = os.getenv("@primeonix26")
-ADMIN_ID = int(os.getenv("916037494"))
-import os
-
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
 POST_TIMES = [
     "12:00",
     "18:00"
