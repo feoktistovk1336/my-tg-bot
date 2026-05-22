@@ -105,5 +105,5 @@ async def ask_groq(prompt: str):
             data = await response.json()
 
             return data["choices"][0]["message"]["content"]
-    if __name__ == "__main__":
+if __name__ == "__main__":
     asyncio.run(main())
