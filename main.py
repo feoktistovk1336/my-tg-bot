@@ -22,9 +22,10 @@ from apscheduler.triggers.date import DateTrigger
 import pytz
  
 # ─── НАСТРОЙКИ ───────────────────────────────────────────────────────────────
-BOT_TOKEN  = "8925233625:AAHD5p5YfGFcZAnhrm3gMlGgbNDQSNznhWw"
-CHANNEL_ID = "@primeonix26"
-TIMEZONE   = "Europe/Moscow"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # ─────────────────────────────────────────────────────────────────────────────
  
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
