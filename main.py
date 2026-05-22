@@ -18,7 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 BOT_TOKEN = "8925233625:AAE0lCKhErwAggy3HBal8VjO3TWXY5IFRzI"
 CHANNEL_ID = "@primeonix26"
-ADMIN_ID = @feoktistov_k
+ADMIN_ID = "916037494"
 GROQ_API_KEY = "Rnb8Lpn4"
 
 POST_TIMES = [
