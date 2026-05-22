@@ -105,5 +105,12 @@ async def ask_groq(prompt: str):
             data = await response.json()
 
             return data["choices"][0]["message"]["content"]
+async def main():
+
+    print("Bot started")
+
+    await dp.start_polling(bot)   
+
+
 if __name__ == "__main__":
     asyncio.run(main())
