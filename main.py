@@ -74,21 +74,23 @@ async def ask_groq(prompt: str):
         "Content-Type": "application/json"
     }
 
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Ты создаешь вирусный Telegram контент про AI. "
-                    "Пиши как большой AI creator аккаунт. "
-                    "Минимум воды. Короткие абзацы. Сильный hook."
-                )
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        "temperature": 0.9,
+   payload = {
+    "model": "llama-3.3-70b-versatile",
+    "messages": [
+        {
+            "role": "system",
+            "content": (
+                "Ты создаешь вирусный Telegram контент про AI. "
+                "Пиши как большой AI creator аккаунт. "
+                "Минимум воды. Короткие абзацы. Сильный hook."
+            )
+        },
+        {
+            "role": "user",
+            "content": prompt
+        }
+    ],
+    "temperature": 0.9
+}
+    if __name__ == "__main__":
     asyncio.run(main())
